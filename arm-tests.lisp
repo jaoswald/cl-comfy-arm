@@ -13,13 +13,15 @@
     (arm::encode (arm::opcode-to-instruction '(arm:and arm:r0 arm:r1
 					       arm:r2)))
 					;;and r0, r1, r2
+  ;;   e   0   0   1   0   0   0   2
   #b11100000000000010000000000000010)
    ;cond000 AND0nnnndddd00000000mmmm
-
+  
 (deftest and-encode-2
     (arm::encode (arm::opcode-to-instruction '(arm:and arm:r15 arm:r14
 					       arm:r13)))
 					;;and r15, r14, r13
+  ;;   e   0   0   e   f   0   0   d
   #b11100000000011101111000000001101)
    ;cond000 AND0nnnndddd00000000mmmm					     
 
@@ -27,15 +29,16 @@
     (arm::encode (arm::opcode-to-instruction '((arm:and arm:s) arm:r15 arm:r14
 					       arm:r13)))
 					;;ands r15, r14, r13
+  ;;   e   0   1   e   f   0   0   d
   #b11100000000111101111000000001101)
    ;cond000 ANDSnnnndddd00000000mmmm					     
 
-(deftest mvn-encode-1
-    (arm::encode (arm::opcode-to-instruction '(arm:mvn arm:r3 arm:r4
-					       arm:r5)))
-					;;mvn r3, r4, r5
-  #b11100001111001000011000000000101)
-   ;cond000 MVN0nnnndddd00000000mmmm
+(deftest mvn-encode-1 ;; note: MVN only takes two args
+    (arm::encode (arm::opcode-to-instruction '(arm:mvn arm:r3 arm:r4)))
+					;;mvn r3, r4
+  ;;   e   1   e   0   3   0   0   4
+  #b11100001111000000011000000000100)
+   ;cond000 MVN00000dddd00000000mmmm
 
 (deftest imm-32-0 (arm::encode-32-bit-immediate 0)
   0 0)
@@ -91,6 +94,7 @@
     (arm::encode (arm::opcode-to-instruction '((arm:and arm:s) arm:r15 arm:r14
 					       (arm:\# #xff00))))
 					;;ands r15, r14, #xff00
+  ;;   e   2   1   e   f   c   f   f
   #b11100010000111101111110011111111)
    ;cond00I ANDSnnnnddddrot_IMMEDIAT					     
 
@@ -98,6 +102,7 @@
     (arm::encode (arm::opcode-to-instruction '((arm:and arm:s) arm:r0 arm:r12
 					       (arm:\# #x3f0))))
 					;;ands r0, r12, #x3f0
+  ;;   e   2   1   c   0   e   3   f
   #b11100010000111000000111000111111)
    ;cond00I ANDSnnnnddddrot_IMMEDIAT					     
 
@@ -106,6 +111,7 @@
 					       arm:r0 arm:r12
 					       (arm:\# #xab))))
 					;;andvss r0, r12, #xab
+  ;;   6   2   1   c   0   0   a   b
   #b01100010000111000000000010101011)
    ;cond00I ANDSnnnnddddrot_IMMEDIAT					     
 
@@ -114,6 +120,7 @@
 					       arm:r0 arm:r12
 					       (arm:\# #x3f0))))
 					;;andhs r0, r12, #x3f0
+  ;;   2   2   0   c   0   e   3   f
   #b00100010000011000000111000111111)
    ;cond00I ANDSnnnnddddrot_IMMEDIAT					     
 
@@ -122,6 +129,7 @@
 					       arm:r0 arm:r12
 					       (arm:\# #x3f0))))
 					;;andvss r0, r12, #x3f0
+  ;;   8   2   1   c   0   e   3   f
   #b10000010000111000000111000111111)
    ;cond00I ANDSnnnnddddrot_IMMEDIAT					     
 
@@ -130,6 +138,7 @@
 					       arm:r0 arm:r12
 					       (arm:r2 arm:lsl (arm:\# 1)))))
 					;;adc r0, r12, r2 LSL #1
+  ;;   e   0   a   c   0   0   8   2
   #b11100000101011000000000010000010)
    ;cond000 ADCSnnnnddddSHFIMsh0mmmm					     
 
@@ -138,6 +147,7 @@
 					       arm:r0 arm:r12
 					       (arm:r2 arm:lsl arm:r4))))
 					;;adc r0, r12, r2 LSL r4
+  ;;   3   0   a   c   0   4   1   2
   #b11100000101011000000010000010010)
    ;cond000 ADCSnnnnddddssss0sh1mmmm					     
 
@@ -146,6 +156,7 @@
 					       arm:r0 arm:r12
 					       (arm:r2 arm:lsr (arm:\# #x1a)))))
 					;;adc r0, r12, r2 LSR #x1a
+  ;;   e   0   a   c   0   d   2   2
   #b11100000101011000000110100100010)
    ;cond000 ADCSnnnnddddSHFIMsh0mmmm					     
 
@@ -155,6 +166,7 @@
 					       arm:r15 arm:r10
 					       (arm:r1 arm:lsr arm:r2))))
 					;;eoreq r15, r10, r1 LSR r2
+  ;;   0   0   2   a   f   2   3   1
   #b00000000001010101111001000110001)
    ;cond000 EORSnnnnddddssss0sh1mmmm					     
 
@@ -163,6 +175,7 @@
 					       arm:r1 arm:r11
 					       (arm:r3 arm:asr (arm:\# 31)))))
 					;;subne r1, r11, r3 ASR #31
+  ;;   1   0   4   b   1   f   c   3
   #b00010000010010110001111111000011)
    ;cond000 SUBSnnnnddddSHFIMsh0mmmm					     
 
@@ -171,6 +184,7 @@
 					       arm:r3 arm:r8
 					       (arm:r2 arm:asr arm:r9))))
 					;;rsblo r3, r8, r2 ASR r9
+  ;;   3   0   6   8   3   9   5   2
   #b00110000011010000011100101010010)
    ;cond000 RSBSnnnnddddssss0sh1mmmm					     
 
@@ -179,6 +193,7 @@
 					       arm:r4 arm:r7
 					       (arm:r3 arm:ror (arm:\# 19)))))
 					;; addmi r4, r7, r3 ROR #19
+  ;;   4   0   9   7   4   9   e   3
   #b01000000100101110100100111100011)
    ;cond000 ADDSnnnnddddSHFIMsh0mmmm					     
 
@@ -187,6 +202,7 @@
 					       arm:r5 arm:r6
 					       (arm:r4 arm:ror arm:r7))))
 					;; adcpl r5, r6, r4 ROR r7
+  ;;   5   0   a   6   5   7   7   4
   #b01010000101001100101011101110100)
    ;cond000 ADCSnnnnddddssss0sh1mmmm					     
 
@@ -194,7 +210,58 @@
     (arm::encode (arm::opcode-to-instruction '((arm:sbc arm:s arm:vc)
 					       arm:r6 arm:r6
 					       (arm:r5 arm:rrx))))
-					;; sbcvs r6, r6, r5 RRX
+					;; sbcvcs r6, r6, r5 RRX
+  ;;   7   0   d   6   6   0   6   5
   #b01110000110101100110000001100101)
    ;cond000 SBCSnnnndddd00000sh0mmmm					     
+
+;; tests from hello world GCC compiler output + objdump
+
+(deftest sub-encode-2
+    (arm::encode (arm::opcode-to-instruction '(arm:sub arm:fp arm:ip 
+						(arm:\# 4))))
+  #xe24cb004)
+
+(deftest and-encode-9
+    (arm::encode (arm::opcode-to-instruction '((arm:and arm:eq)
+					       arm:r0 arm:r0 arm:r0)))
+  0)
+
+(deftest mov-encode-1
+    (arm::encode (arm::opcode-to-instruction '(arm:mov arm:ip arm:sp)))
+  #xe1a0c00d)
+
+
+(deftest cmp-encode-1
+    (arm::encode (arm::opcode-to-instruction '(arm:cmp arm:r1 (arm:\# #x1f))))
+  #b11100011010100010000000000011111)
+   ;cond00I CMP1nnnn0000rot_IMMEDIAT					     
+
+(deftest cmp-encode-2
+    (arm::encode (arm::opcode-to-instruction '(arm:cmp arm:r2 arm:r10)))
+  #b11100001010100100000000000001010)
+   ;cond000 CMP1nnnn0000SHFIMsh0mmmm					     
+
+(deftest cmp-encode-3
+    (arm::encode (arm::opcode-to-instruction '(arm:cmp arm:r1 (arm:\# #x1e))))
+  #xe351001e)
+
+(deftest cmp-encode-4
+    (arm::encode (arm::opcode-to-instruction '(arm:cmp arm:r0 arm:r1)))
+  #xe1500001)
+;;      e   1   5   0   0   0   0   1
+;; #b11100001010100000000000000000001)
+;;   cond000 CMP1nnnn0000SHFIMsh0mmmm					     
+
+#||
+(deftest stmdb-encode-1
+    (arm::encode (arm::opcode-to-instruction '(arm:stmdb (arm:sp arm:!)
+					       arm:fp arm:ip arm:lr arm:pc)))
+  #xe92dd800)
+
+(deftest ldmia-encode-1
+    (arm::encode (arm::opcode-to-instruction '(arm:ldmia arm:sp
+					       arm:fp arm:sp arm:pc)))
+  #xe89da800)
+||#
 

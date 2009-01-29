@@ -8,6 +8,9 @@
   (:export
    "R0" "R1" "R2" "R3" "R4" "R5" "R6" "R7"
    "R8" "R9" "R10" "R11" "R12" "R13" "R14" "R15"
+   "FP" ; alias for R11
+   "IP" ; alias for R12
+   "SP" ; alias for R13
    "LR" ; alias for R14
    "PC" ; alias for R15
    "EQ" "NE" "CS" "HS" "CC" "LO" "MI" "PL"
@@ -15,11 +18,26 @@
    "AL"
    "S" "LSL" "LSR" "ASR" "ROR" "RRX" "#"
    "MVN" "MOV" "ORR" "CMN" "BIC" "CMP" "TEQ" "TST" "RSC"
-   "SBC" "ADC" "ADD" "RSB" "SUB" "EOR" "AND"))
+   "SBC" "ADC" "ADD" "RSB" "SUB" "EOR" "AND"
+    "LDMDA" "LDMFA" "LDMIA" "LDMFD"
+    "LDMDB" "LDMEA" "LDMIB" "LDMED"
+    "STMDA" "STMED" "STMIA" "STMEA"
+    "STMDB" "STMFD" "STMIB" "STMFA"
+))
 
 (cl:in-package "ARM")
 
 (define-condition arm-error (error) ())
+
+(define-condition bad-argument-count (arm-error)
+  ((opcode :reader opcode :initarg opcode)
+   (arglist :reader arglist :initarg arglist)
+   (expected-count :reader expected-count :initarg expected-count))
+  (:report (lambda (condition stream)
+	     (format stream "opcode ~A accepts only ~D arguments, given ~A."
+		     (opcode condition)
+		     (expected-count condition)
+		     (arglist condition)))))
 
 (define-condition bad-condition-code (arm-error)
   ((condition-code :reader condition-code :initarg condition-code))
@@ -77,6 +95,11 @@
    (rs :accessor rs :initarg rs :documentation "Shifter shift register")
    (shift :accessor shift :initarg shift)))
 
+(defclass load/store-multiple (instruction)
+  ((rn :accessor rn :initarg rn :documentation "Storage pointer")
+   (update-rn :accessor update-rn :initarg update-rn :documentation 
+	      "non-NIL if Rn is updated after the load/store.")
+   (regs :accessor regs :initarg regs :documentation "List of registers")))
   
 (defun encode-condition (cond)
   (case cond
@@ -103,6 +126,9 @@
 		       r9 r10 r11 r12 r13 r14 r15))))
     (cond 
       (r r)
+      ((eq reg 'FP) 11)
+      ((eq reg 'IP) 12)
+      ((eq reg 'SP) 13)
       ((eq reg 'LR) 14)
       ((eq reg 'PC) 15)
       (t (error 'bad-register 'register reg)))))
@@ -224,6 +250,7 @@ or NIL if VAL cannot be so encoded."
 ;; shift = #b10: ASR
 ;; shift = #b11: ROR
 ;; ROR #0 -> RRX
+
 (defun encode-shift (shift-sym)
   "Returns the integer encoding for a shift-symbol; 
 NIL equivalent to LSL #0, RRX equivalent to ROR #0"
@@ -254,7 +281,13 @@ NIL equivalent to LSL #0, RRX equivalent to ROR #0"
 ;;; opcodes with no flags, or S = 0, cond = always
 ;;;
 ;;; (opcode <Rd> <Rn> <shifter_operand>)
-;;;
+;;; 
+;;; when only two arguments after the opcode
+;;; 
+;;;   for MOV, MVN (opcode <Rd> <shifter_operand>) Rn is always encoded as R0
+;;;   for CMP, CMN, TST, TEQ S=1 always, and it is 
+;;;                (opcode <Rn> <shifter_operand>), Rd is always encoded as R0
+;;; 
 ;;; opcodes with S=1, cond = always
 ;;;
 ;;; ((opcode :s) <Rd> <Rn> <shifter_operand>)
@@ -273,7 +306,7 @@ NIL equivalent to LSL #0, RRX equivalent to ROR #0"
 ;;;
 ;;; (opcode <Rn> &rest <register-list>)
 ;;;
-;;; (opcode (arm:! <Rn>) &rest <register-list>)  sets the W bit, updating Rn
+;;; (opcode (<Rn> arm:!) &rest <register-list>)  sets the W bit, updating Rn
 ;;;
 ;;; opcode can be symbol (LDMIA, STMDB, etc.) or
 ;;; (opcode <cond>) (opcode arm:s) (opcode <cond> arm:s) or 
@@ -364,23 +397,69 @@ TODO: shift-value integers should be checked for magnitude"
      (values (first shifter-op) (encode-shift (second shifter-op))
 	     (second (third shifter-op))))
     (t (error 'bad-shift-type 'shift-type shifter-op))))
-     
-     
+
+;; load/store-multiple bits
+
+(defun load/store-bits (opcode)
+  "Returns three values: (T/NIL respectively)
+L (load/store)
+P (address included in storage/not-included)
+U (transfer made upwards/downwards)"
+
+  (case opcode 
+    ((LDMDA LDMFA) (values t nil nil))
+    ((LDMIA LDMFD) (values t nil t))
+    ((LDMDB LDMEA) (values t t nil))
+    ((LDMIB LDMED) (values t t t))
+    ((STMDA STMED) (values nil nil nil))
+    ((STMIA STMEA) (values nil nil t))
+    ((STMDB STMFD) (values nil t nil))
+    ((STMIB STMFA) (values nil t t))
+    (t (error 'bad-opcode 'opcode opcode))))
+    
 (defun opcode-to-instruction (symbolic-opcode)
   (let ((opcode (first symbolic-opcode)))
     (multiple-value-bind (op condition update)
 	(split-sexp-opcode opcode)
       (cond 
-	((encode-data-processing-opcodes op)	 
-	 (let ((shifter-op (fourth symbolic-opcode)))
+	((encode-data-processing-opcodes op)	
+	 
+	 ;; basic checks for argument count
+	 (cond ((member op '(MOV MVN CMP CMN TST TEQ))
+		(unless (null (cdddr symbolic-opcode))
+		  (error 'bad-argument-count
+			 'opcode op 
+			 'arglist (rest symbolic-opcode)
+			 'expected-count 2)))
+	       (t (unless (null (cddddr symbolic-opcode))
+		  (error 'bad-argument-count
+			 'opcode op 
+			 'arglist (rest symbolic-opcode)
+			 'expected-count 3))))
+	 (let ((shifter-op
+		(cond ((member op '(MOV MVN CMP CMN TST TEQ))
+		       (third symbolic-opcode))
+		      (t (fourth symbolic-opcode))))
+	       (rd 
+		(cond ((member op '(CMP CMN TST TEQ))
+		       'arm:r0) ; encoded as zero
+		      (t (second symbolic-opcode))))
+	       (rn
+		(cond ((member op '(MOV MVN)) 'arm:r0) ; encoded as zero
+		      ((member op '(CMP CMN TST TEQ))
+		       (second symbolic-opcode))
+		      (t (third symbolic-opcode))))
+	       (s (cond ((member op '(CMP CMN TST TEQ)) ; imply S=1
+			 t)
+			(t update))))
 	   (cond 
 	     ((symbolp shifter-op)
 	      (make-instance 'immediate-shift
 			     'opcode op
 			     'condition condition
-			     'update update
-			     'rd (second symbolic-opcode)
-			     'rn (third symbolic-opcode)
+			     'update s
+			     'rd rd
+			     'rn rn
 			     'rm shifter-op
 			     'shift 0
 			     'shift_imm 0))
@@ -391,10 +470,10 @@ TODO: shift-value integers should be checked for magnitude"
 		(if immed-8
 		    (make-instance 'immediate
 				   'condition condition
-				   'update update
+				   'update s
 				   'opcode op
-				   'rd (second symbolic-opcode)
-				   'rn (third symbolic-opcode)
+				   'rd rd
+				   'rn rn
 				   'rotate_imm rotate-imm 
 				   'immed_8 immed-8)
 		    (error 'bad-immediate-32 'immediate 
@@ -407,19 +486,19 @@ TODO: shift-value integers should be checked for magnitude"
 		(if (symbolp shift-reg-or-imm)
 		    (make-instance 'register-shift
 				   'opcode op
-				   'update update
+				   'update s
 				   'condition condition
-				   'rd (second symbolic-opcode)
-				   'rn (third symbolic-opcode)
+				   'rd rd
+				   'rn rn
 				   'rm rm
 				   'shift shift-code
 				   'rs shift-reg-or-imm)
 		    (make-instance 'immediate-shift
 				   'opcode op
-				   'update update
+				   'update s
 				   'condition condition
-				   'rd (second symbolic-opcode)
-				   'rn (third symbolic-opcode)
+				   'rd rd
+				   'rn rn
 				   'rm rm
 				   'shift shift-code
 				   'shift_imm shift-reg-or-imm))))
