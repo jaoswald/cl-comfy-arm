@@ -253,7 +253,6 @@
 ;; #b11100001010100000000000000000001)
 ;;   cond000 CMP1nnnn0000SHFIMsh0mmmm					     
 
-#||
 (deftest stmdb-encode-1
     (arm::encode (arm::opcode-to-instruction '(arm:stmdb (arm:sp arm:!)
 					       arm:fp arm:ip arm:lr arm:pc)))
@@ -263,5 +262,5 @@
     (arm::encode (arm::opcode-to-instruction '(arm:ldmia arm:sp
 					       arm:fp arm:sp arm:pc)))
   #xe89da800)
-||#
+
 

@@ -17,6 +17,7 @@
    "VS" "VC" "HI" "LS" "GE" "LT" "GT" "LE"
    "AL"
    "S" "LSL" "LSR" "ASR" "ROR" "RRX" "#"
+   "!" "^"
    "MVN" "MOV" "ORR" "CMN" "BIC" "CMP" "TEQ" "TST" "RSC"
    "SBC" "ADC" "ADD" "RSB" "SUB" "EOR" "AND"
     "LDMDA" "LDMFA" "LDMIA" "LDMFD"
@@ -186,7 +187,15 @@ or NIL if VAL cannot be so encoded."
 		    immed)
 		(/ shift 2))
 	finally (return nil)))))
-      
+
+(defun data-processing-opcode-p (sym)
+  (member sym '(AND EOR SUB RSB ADD ADC SBC RSC 
+		TST TEQ CMP CMN ORR MOV BIC MVN)))
+
+(defun load/store-multiple-opcode-p (sym)
+  (member sym '(LDMDA LDMFA LDMIA LDMFD LDMDB LDMEA LDMIB LDMED
+		STMDA STMED STMIA STMEA STMDB STMFD STMIB STMFA)))
+
 (defun encode-data-processing-opcodes (opcode)
   "bits 24..21 of a data-processing instruction."
   (case opcode
@@ -273,6 +282,27 @@ NIL equivalent to LSL #0, RRX equivalent to ROR #0"
 	  (ldb (byte 4 0) word) rm)
     word))
 
+(defmethod encode ((insn load/store-multiple))
+  (let ((cond (encode-condition (condition insn)))
+	(rn (encode-register (rn insn)))
+	(s (encode-update (update insn)))
+	(w (encode-update (update-rn insn)))
+	(word 0))
+    (multiple-value-bind (l p u)
+	(load/store-bits (opcode insn))
+      (setf (ldb (byte 4 28) word) cond
+	    (ldb (byte 3 25) word) #b100
+	    (ldb (byte 1 24) word) p
+	    (ldb (byte 1 23) word) u
+	    (ldb (byte 1 22) word) s
+	    (ldb (byte 1 21) word) w
+	    (ldb (byte 1 20) word) l
+	    (ldb (byte 4 16) word) rn)
+      (mapc #'(lambda (reg)
+		(setf (ldb (byte 1 (encode-register reg)) word) 1))
+	    (regs insn))
+      word)))
+
 ;;; S-expression instruction syntax
 ;;;
 ;;; Data-processing instructions
@@ -333,27 +363,27 @@ NIL equivalent to LSL #0, RRX equivalent to ROR #0"
   (cond 
     ((symbolp opcode-list) (values opcode-list 'AL nil)) ; bare opcode: S=0, cond=always
     ((not (consp opcode-list)) (error 'bad-opcode 'opcode opcode-list))
-    ((null (cddr opcode-list)) ; one decorating symbol
-     (let ((decorator (second opcode-list)))
-       (cond 
-	 ((eq decorator 's) (values (car opcode-list) 'al t))
-	 ((encode-condition decorator) (values (car opcode-list) 
-					       decorator nil))
-	 (t (error 'bad-condition 'condition decorator)))))
-    ((null (cdddr opcode-list)) 
-     ;; two decorators, one must be S, the other
-     ;; the condition
-     (let ((s (find 's (cdr opcode-list)))
-	   (condition (remove 's (cdr opcode-list))))
-       (cond ((and s 
-		   (null (cdr condition))
-		   (encode-condition (car condition)))
-	      (values (car opcode-list) (car condition) s))
-	     (s ; s, but bogus condition
-	      (error 'bad-condition 'condition (car condition)))
-	     ((cdr condition) ; no s, but two symbols
-	      (error 'bad-condition 'condition condition)))))
-    (t (error 'bad-opcode 'opcode opcode-list))))
+    ((data-processing-opcode-p (car opcode-list))
+     (let (s cond)
+       (mapcar #'(lambda (decorator)
+		   (cond ((and (eq decorator 's) (not s)) (setq s t))
+			 ((and (encode-condition decorator) (not cond))
+			  (setq cond decorator))
+			 (t (error 'bad-condition 'condition decorator))))
+	       (rest opcode-list))
+       (values (car opcode-list) (or cond 'AL) s)))
+    ((load/store-multiple-opcode-p (car opcode-list))
+     (let (s cond)
+       (mapcar #'(lambda (decorator)
+		   (cond ((and (member decorator '(s ^)) (not s)) (setq s t))
+			 ((and (encode-condition decorator) (not cond))
+			  (setq cond decorator))
+			 (t (error 'bad-condition 'condition 
+				   (rest opcode-list)))))
+	       (rest opcode-list))
+       (values (car opcode-list) (or cond 'AL) s)))
+    (t (error "Not implemented"))
+    ))
 
 ;;; <shifter_operand>
 ;;;
@@ -401,20 +431,20 @@ TODO: shift-value integers should be checked for magnitude"
 ;; load/store-multiple bits
 
 (defun load/store-bits (opcode)
-  "Returns three values: (T/NIL respectively)
+  "Returns three values: (1/0 respectively)
 L (load/store)
 P (address included in storage/not-included)
 U (transfer made upwards/downwards)"
 
   (case opcode 
-    ((LDMDA LDMFA) (values t nil nil))
-    ((LDMIA LDMFD) (values t nil t))
-    ((LDMDB LDMEA) (values t t nil))
-    ((LDMIB LDMED) (values t t t))
-    ((STMDA STMED) (values nil nil nil))
-    ((STMIA STMEA) (values nil nil t))
-    ((STMDB STMFD) (values nil t nil))
-    ((STMIB STMFA) (values nil t t))
+    ((LDMDA LDMFA) (values 1 0 0))
+    ((LDMIA LDMFD) (values 1 0 1))
+    ((LDMDB LDMEA) (values 1 1 0))
+    ((LDMIB LDMED) (values 1 1 1))
+    ((STMDA STMED) (values 0 0 0))
+    ((STMIA STMEA) (values 0 0 1))
+    ((STMDB STMFD) (values 0 1 0))
+    ((STMIB STMFA) (values 0 1 1))
     (t (error 'bad-opcode 'opcode opcode))))
     
 (defun opcode-to-instruction (symbolic-opcode)
@@ -422,7 +452,7 @@ U (transfer made upwards/downwards)"
     (multiple-value-bind (op condition update)
 	(split-sexp-opcode opcode)
       (cond 
-	((encode-data-processing-opcodes op)	
+	((data-processing-opcode-p op)	
 	 
 	 ;; basic checks for argument count
 	 (cond ((member op '(MOV MVN CMP CMN TST TEQ))
@@ -502,5 +532,22 @@ U (transfer made upwards/downwards)"
 				   'rm rm
 				   'shift shift-code
 				   'shift_imm shift-reg-or-imm))))
-	  (t (error "Not yet implemented.")))))))))
+	     (t (error "Bad data-processing opcode.")))))
+	((load/store-multiple-opcode-p op)
+	 ;; rn
+	 (multiple-value-bind (rn update-rn)
+	     (let ((rn-symb (second symbolic-opcode))) ;; <rn> or (rn arm:!)
+	       (cond
+		 ((symbolp rn-symb) (values rn-symb nil))
+		 ((and (consp rn-symb) (null (cddr rn-symb))
+		       (eq (second rn-symb) '!)) (values (car rn-symb) t))
+		 (t (error 'bad-register 'register 'rn-symb))))
+	   (make-instance 'load/store-multiple
+			  'opcode op
+			  'rn rn
+			  'update-rn update-rn
+			  'condition condition
+			  'update update
+			  'regs (cddr symbolic-opcode))))
+	(t (error "Not yet implemented."))))))
     
