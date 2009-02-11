@@ -264,3 +264,59 @@
   #xe89da800)
 
 
+(deftest bl-encode-1
+    (arm::encode (arm::opcode-to-instruction '(arm:bl 2)))
+  #xeb000000)
+
+(deftest bl-encode-2
+    (arm::encode (arm::opcode-to-instruction '(arm:bl -1)))
+  #xebfffffd)
+
+(deftest b-encode-1
+    (arm::encode (arm::opcode-to-instruction '(arm:b 4)))
+  #xea000002)
+
+(deftest b-encode-2
+    (arm::encode (arm::opcode-to-instruction '((arm:b arm:gt) -3)))
+  #xcafffffb)
+
+(deftest bx-encode-1
+    (arm::encode (arm::opcode-to-instruction '(arm:bx arm:r4)))
+  #xe12fff14)
+
+(deftest bx-encode-2
+    (arm::encode (arm::opcode-to-instruction '((arm:bx arm:le) arm:r14)))
+  #xd12fff1e)
+
+(deftest blx2-encode-1 
+    ;; BLX(2) uses register, calls ARM or Thumb, can have condition code
+    (arm::encode (arm::opcode-to-instruction '((arm:blx arm:lt) arm:r13)))
+  #xb12fff3d)
+
+(deftest blx1-encode-1
+    ;; BLX(1) uses half-word offset, calls Thumb, CANNOT have condition code
+    (arm::encode (arm::opcode-to-instruction '(arm:blx 10)))
+  #b11111010000000000000000000001000)
+  ; 1111101H<  signed   immed    24>
+
+;; should define some macro to take away the m-v-b, ignore-errors,
+;;  (not success) and (class-name)
+;; 
+(deftest blx1-bogus-1
+    (multiple-value-bind (success cond)
+	(ignore-errors
+	  (arm::encode (arm::opcode-to-instruction '((arm:blx arm:lt) 10))))
+      (values (not success) 
+	      (class-name (class-of cond))
+	      (arm::opcode cond)))
+  T arm::bad-opcode (arm:blx arm:lt))
+      
+#||
+(deftest blx1-encode-2
+    ;; BLX(1) uses half-word offset, calls Thumb, CANNOT have condition code
+    (arm::encode (arm::opcode-to-instruction (list 'arm:blx (+ 10 1/2))))
+  #b11111011000000000000000000001000)
+  ; 1111101H<  signed   immed    24>
+
+;; NOT YET IMPLEMENTED
+||#

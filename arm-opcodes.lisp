@@ -24,6 +24,7 @@
     "LDMDB" "LDMEA" "LDMIB" "LDMED"
     "STMDA" "STMED" "STMIA" "STMEA"
     "STMDB" "STMFD" "STMIB" "STMFA"
+    "B" "BL" "BLX" "BX"
 ))
 
 (cl:in-package "ARM")
@@ -45,6 +46,12 @@
   (:report (lambda (condition stream)
 	     (format stream "~A is not a valid condition code."
 		     (condition-code condition)))))
+
+(define-condition bad-update (arm-error)
+  ((opcode :reader opcode :initarg opcode))
+  (:report (lambda (condition stream)
+	     (format stream "~A does not allow an update flag."
+		     (opcode condition)))))
 
 (define-condition bad-register (arm-error)
   ((register :reader register :initarg register))
@@ -102,6 +109,38 @@
 	      "non-NIL if Rn is updated after the load/store.")
    (regs :accessor regs :initarg regs :documentation "List of registers")))
   
+;; Ignore functionality to invoke Thumb or Jazelle instructions.
+;; full 32-bit ARM only for now.
+
+(defclass branch (instruction)
+  ((use-link-register :accessor use-link-register :initarg use-link-register
+		      :documentation "L bit: store PC in R14 before branch.")))
+
+;; relative: have relative address in instruction word
+;;
+;; B: does not use link register
+;; BL: uses link register.
+;; ignore BLX(1) for now, which switches to Thumb, and can branch by
+;; half-word offsets using the H bit, and *does not use the cond field.*
+
+(defclass branch-relative (branch)
+  ((word-offset :accessor word-offset :initarg word-offset 
+		:documentation "Branch destination offset,
+relative to *this* instruction in 32-bit words.")))
+
+;; branch target in register (if Rm[0] is 1, also switches to Thumb, but
+;;         that is a run-time feature, and I am ignoring Thumb for now anyway.
+;;
+;; BX: does not use link register
+;; BLX(2): uses link register 
+;; BXJ: to Jazelle, ignore for now.
+;;
+
+(defclass branch-register (branch)
+  ((rn :accessor rn :initarg rn 
+       :documentation "Register containing branch destination.")))
+
+
 (defun encode-condition (cond)
   (case cond
     (EQ #b0000)
@@ -120,6 +159,11 @@
     (LE #b1101)
     ((AL nil) #b1110)
     (t (error 'bad-condition-code 'condition-code cond))))
+
+(defun register-p (reg)
+  (member reg '(r0 r1 r2 r3 r4 r5 r6 r7 r8 
+		r9 r10 r11 r12 r13 r14 r15
+		fp ip sp lr pc)))
 
 (defun encode-register (reg)
   (let ((r (position reg
@@ -195,6 +239,9 @@ or NIL if VAL cannot be so encoded."
 (defun load/store-multiple-opcode-p (sym)
   (member sym '(LDMDA LDMFA LDMIA LDMFD LDMDB LDMEA LDMIB LDMED
 		STMDA STMED STMIA STMEA STMDB STMFD STMIB STMFA)))
+
+(defun branch-opcode-p (sym)
+  (member sym '(B BL BX BLX)))  ; BXJ
 
 (defun encode-data-processing-opcodes (opcode)
   "bits 24..21 of a data-processing instruction."
@@ -303,6 +350,43 @@ NIL equivalent to LSL #0, RRX equivalent to ROR #0"
 	    (regs insn))
       word)))
 
+;; branch relative
+;; B, BL, BLX non-register
+
+(defmethod encode ((insn branch-relative))
+  ;; branches computed with respect to PC=current-instruction + 8 bytes
+  ;; = current+2 words
+  (let ((branch-immed (- (word-offset insn) 2))
+	(cond (if (eq (opcode insn) 'blx)
+		  #b1111
+		  (encode-condition (condition insn))))
+	(word 0))
+    (setf (ldb (byte 4 28) word) cond
+	  (ldb (byte 24 0) word) (truncate branch-immed)
+	  (ldb (byte 3 25) word) #b101
+	  (ldb (byte 1 24) word) (case (opcode insn)
+				   (b 0) ; L bit
+				   (bl 1) ; L bit
+				   (blx 0))) ; H bit
+    ;; H bit can be 1 for Thumb instruction mid-32-bit-word...
+    word))
+
+;; bx, blx(2), bxj (ignore for now)
+
+(defmethod encode ((insn branch-register))
+  (let ((cond (encode-condition (condition insn)))
+	(l (ecase (opcode insn)
+	     (bx #b0001)
+	     (blx #b0011)
+	     (bxj #b0010)))
+	(word 0))
+    (setf (ldb (byte 4 28) word) cond
+	  (ldb (byte 8 20) word) #b00010010
+	  (ldb (byte 12 8) word) #b111111111111 ; SBO :should be one
+	  (ldb (byte 4 4) word) l
+	  (ldb (byte 4 0) word) (encode-register (rn insn)))
+    word))
+
 ;;; S-expression instruction syntax
 ;;;
 ;;; Data-processing instructions
@@ -330,6 +414,13 @@ NIL equivalent to LSL #0, RRX equivalent to ROR #0"
 ;;; 
 ;;; ((opcode arm:s <cond>) <Rd> <Rn> <shifter_operand>)
 ;;; ((opcode <cond> arm:s) <Rd> <Rn> <shifter_operand>)
+;;;
+;;;
+;;; Branch instructions
+;;; -------------------
+;;;
+;;; (opcode <Rn>) ((opcode <cond>) <Rn>)
+;;; (opcode <relative-address>) ((opcode <cond>) <relative-address>)
 ;;;
 ;;; Load/store multiple register instructions
 ;;; -----------------------------------------
@@ -382,7 +473,12 @@ NIL equivalent to LSL #0, RRX equivalent to ROR #0"
 				   (rest opcode-list)))))
 	       (rest opcode-list))
        (values (car opcode-list) (or cond 'AL) s)))
-    (t (error "Not implemented"))
+    ((branch-opcode-p (car opcode-list))
+     (if (and (encode-condition (cadr opcode-list))
+	      (null (cddr opcode-list)))
+	 (values (car opcode-list) (cadr opcode-list) nil)
+	 (error 'bad-condition 'condition (rest opcode-list))))
+    (t (error "split-sexp-opcode: Not implemented"))
     ))
 
 ;;; <shifter_operand>
@@ -452,6 +548,43 @@ U (transfer made upwards/downwards)"
     (multiple-value-bind (op condition update)
 	(split-sexp-opcode opcode)
       (cond 
+	((branch-opcode-p op)
+	 (when update
+	   (error 'bad-update 'opcode symbolic-opcode))
+	 (unless (null (cddr symbolic-opcode))
+	   (error 'bad-argument-count
+		  'opcode op
+		  'arglist (rest symbolic-opcode)
+		  'expected-count 1))
+	 (case op
+	   ((b bl) (make-instance 'branch-relative 
+				  'condition condition
+				  'opcode op
+				  'word-offset (second symbolic-opcode)
+				  'use-link-register (eq op 'bl)))
+	   (blx (if (register-p (second symbolic-opcode))
+		    ; BLX(2)
+		    (make-instance 'branch-register
+				   'condition condition
+				   'opcode op
+				   'rn (second symbolic-opcode)
+				   'use-link-register t)
+		    ; BLX(1): no condition code allowed
+		    (if (eq condition 'arm:al)
+			(make-instance 'branch-relative
+				       'opcode op
+				       'word-offset (second symbolic-opcode)
+				       'use-link-register t)
+			(error 'bad-opcode 'opcode
+			       (car symbolic-opcode)))))
+		
+	   (bx (make-instance 'branch-register
+			      'opcode op
+			      'condition condition
+			      'rn (second symbolic-opcode)
+			      'use-link-register nil))
+	   (t (error 'bad-opcode 'opcode op))))
+
 	((data-processing-opcode-p op)	
 	 
 	 ;; basic checks for argument count
