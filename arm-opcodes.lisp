@@ -25,6 +25,7 @@
     "STMDA" "STMED" "STMIA" "STMEA"
     "STMDB" "STMFD" "STMIB" "STMFA"
     "B" "BL" "BLX" "BX"
+    "LDR"
 ))
 
 (cl:in-package "ARM")
@@ -47,6 +48,12 @@
 	     (format stream "~A is not a valid condition code."
 		     (condition-code condition)))))
 
+(define-condition bad-opcode-modifiers (arm-error)
+  ((modifier-list :reader modifier-list :initarg modifier-list))
+  (:report (lambda (condition stream)
+	     (format stream "~A is not a valid opcode modifier list."
+		     (modifier-list condition)))))
+
 (define-condition bad-update (arm-error)
   ((opcode :reader opcode :initarg opcode))
   (:report (lambda (condition stream)
@@ -57,6 +64,12 @@
   ((register :reader register :initarg register))
   (:report (lambda (condition stream)
 	     (format stream "~A is not a valid register."
+		     (register condition)))))
+
+(define-condition bad-base-register-form (arm-error)
+  ((register :reader register :initarg register))
+  (:report (lambda (condition stream)
+	     (format stream "~A is not a valid base register."
 		     (register condition)))))
 
 (define-condition bad-opcode (arm-error)
@@ -70,6 +83,12 @@
   (:report (lambda (condition stream)
 	     (format stream "~A cannot be encoded as an immediate value."
 		     (immediate condition)))))
+
+(define-condition bad-shifter-op (arm-error)
+  ((shifter-op :reader shifter-op :initarg shifter-op))
+  (:report (lambda (condition stream)
+	     (format stream "~A is not a valid shifter operand."
+		     (shifter-op condition)))))
 
 (define-condition bad-shift-type (arm-error)
   ((shift-type :reader shift-type :initarg shift-type))
@@ -140,6 +159,43 @@ relative to *this* instruction in 32-bit words.")))
   ((rn :accessor rn :initarg rn 
        :documentation "Register containing branch destination.")))
 
+(defclass load-store (instruction)
+  ((rd :accessor rd :initarg rd
+       :documentation "Register being loaded/stored")
+   (rn :accessor rn :initarg rn
+       :documentation "Register containing base address")
+   (load/store :accessor load/store :initarg load/store
+	       :documentation "LOAD or STORE")
+   (size :accessor size :initarg size 
+	 :documentation "Size: BYTE, WORD, etc.")
+   (offset-sign :accessor offset-sign :initarg offset-sign
+		:initform 1
+		:documentation "U-bit 1 for positive, 0 for negative")))
+
+(defclass load-immediate-offset (load-store)
+  ;; note offset 0 is load/store rd [rn]
+  ((offset-12 :accessor offset-12 :initarg offset-12
+	      :initform 0
+	      :documentation "Unsigned offset, in bytes")))
+
+(defclass load-register-offset (load-store)
+  ((rm :accessor rm :initarg rm
+       :documentation "Register containing offset, in bytes")
+   ;; note: LSL #0 is encoding for load/store rd [Rn +/- Rm]
+   (shift :accessor shift :initarg shift
+	  :initform 0
+	  :documentation "shift code: #b00=LSL, etc.")
+   (shift_imm :accessor shift_imm :initarg shift_imm
+	      :initform 0
+	      :documentation "Amount to shift: 0 to 32")))
+
+(defclass load-immediate-preindex (load-immediate-offset) ())
+(defclass load-register-preindex (load-register-offset) ())
+(defclass load-immediate-postindex (load-immediate-offset) ())
+(defclass load-register-postindex (load-register-offset) ())
+
+(defun condition-p (cond)
+  (member cond '(eq ne cs hs cc lo mi pl vs vc hi ls ge lt gt le al nil)))
 
 (defun encode-condition (cond)
   (case cond
@@ -243,6 +299,12 @@ or NIL if VAL cannot be so encoded."
 (defun branch-opcode-p (sym)
   (member sym '(B BL BX BLX)))  ; BXJ
 
+(defun load-store-opcode-p (sym)
+  (member sym '(LDR))) ; etc.
+
+(defun load-opcode-p (sym)
+  (member sym '(LDR)))
+
 (defun encode-data-processing-opcodes (opcode)
   "bits 24..21 of a data-processing instruction."
   (case opcode
@@ -336,7 +398,7 @@ NIL equivalent to LSL #0, RRX equivalent to ROR #0"
 	(w (encode-update (update-rn insn)))
 	(word 0))
     (multiple-value-bind (l p u)
-	(load/store-bits (opcode insn))
+	(load/store-multiple-bits (opcode insn))
       (setf (ldb (byte 4 28) word) cond
 	    (ldb (byte 3 25) word) #b100
 	    (ldb (byte 1 24) word) p
@@ -434,10 +496,35 @@ NIL equivalent to LSL #0, RRX equivalent to ROR #0"
 ;;;                                (opcode arm:s <cond>) 
 ;;; where arm:^ can be used as a synonym for arm:s
 ;;; (The S-bit in LDM with R15/PC in the register list is used to indicate 
-;;;  loading of CPSR from the SPSR; in priviledged mode 
+;;;  loading of CPSR from the SPSR; in privileged mode 
 ;;;  for LDM without R15/PC or STM, the S-bit set indicates the 
 ;;;  load/store affects user-mode registers)
 ;;;
+;;;
+;;; Load/store instructions
+;;; -----------------------
+;;;
+;;; (opcode <Rd> <Rn>) = opcode <Rd>, [<Rn> , 0]
+;;; (opcode <Rd> <Rn> (arm:# <immediate>)) 
+;;;                    = opcode <Rd>, <Rn> #+/-offset_12
+;;;   ...or should the (arm:# <immediate>) simply be <immediate>,
+;;;      i.e., if not a register symbol
+;;;
+;;; (opcode <Rd> <Rn> (arm:+ <Rm>)) 
+;;; (opcode <Rd> <Rn> (arm:- <Rm>))
+;;;                    = opcode <Rd>, [<Rn> +/-<Rm>]
+;;; or should the arm:+/- form enclose both <Rn> and <Rm>?
+;;;
+;;; (opcode <Rd> <Rn> (arm:+ <Rm> arm:LSL <immediate>))
+;;;
+;;; (opcode <Rd> (arm:! <Rn> <offset12>)) <offset12> defaults to 0?
+;;; (opcode <Rd> (arm:! <Rn> (arm:+ <Rm>))
+;;; (opcode <Rd> (arm:! <Rn> (arm:- <Rm>))
+;;; (opcode <Rd> (arm:! <Rn>) <immediate>)
+;;; (opcode <Rd> (arm:! <Rn>) (arm:+ <Rm>))
+;;; (opcode <Rd> (arm:! <Rn>) (arm:- <Rm>))
+;;; (opcode <Rd> (arm:! <Rn>) (arm:+ <Rm> arm:LSL <shift_imm>))
+;;; (opcode <Rd> (arm:! <Rn>) (arm:- <Rm> arm:LSL <shift_imm>))
 
 (defun split-sexp-opcode (opcode-list)
   "Splits s-expression form of opcodes.
@@ -526,7 +613,7 @@ TODO: shift-value integers should be checked for magnitude"
 
 ;; load/store-multiple bits
 
-(defun load/store-bits (opcode)
+(defun load/store-multiple-bits (opcode)
   "Returns three values: (1/0 respectively)
 L (load/store)
 P (address included in storage/not-included)
@@ -542,7 +629,24 @@ U (transfer made upwards/downwards)"
     ((STMDB STMFD) (values 0 1 0))
     ((STMIB STMFA) (values 0 1 1))
     (t (error 'bad-opcode 'opcode opcode))))
-    
+
+(defun split-load/store-rn (rn)
+  "Decodes a base-address argument S-expression, returning multiple values
+First value: the base register ARM:R0, R1, etc.
+Second value: non-nil if indexed (i.e., (arm:! <Rn> ...))
+Third value: the offset form."
+  (cond
+    ((symbolp rn) 
+     (if (register-p rn)
+	 (values rn nil nil)
+	 (error 'bad-register 'register rn)))
+    ((consp rn)
+     (unless (and (eq (car rn) 'arm:!)
+		  (register-p (second rn)))
+       (error 'bad-base-register-form :register rn))
+     (values (second rn) t (cddr rn)))
+    (t (error 'bad-base-register-form :register rn))))
+     
 (defun opcode-to-instruction (symbolic-opcode)
   (let ((opcode (first symbolic-opcode)))
     (multiple-value-bind (op condition update)
@@ -682,5 +786,15 @@ U (transfer made upwards/downwards)"
 			  'condition condition
 			  'update update
 			  'regs (cddr symbolic-opcode))))
+
+	((load-store-opcode-p op)
+	 (let ((load/store (load-opcode-p op))
+	       (rd (second symbolic-opcode))
+	       (rn (third symbolic-opcode))
+	       (post-index-offset (fourth symbolic-opcode)))
+	   (multiple-value-bind (rn indexed pre-index-offset)
+	       (split-load/store-rn rn)
+	     
+	     (error "Load/store not yet implemented."))))
 	(t (error "Not yet implemented."))))))
     
